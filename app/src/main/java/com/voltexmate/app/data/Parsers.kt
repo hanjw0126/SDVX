@@ -8,6 +8,7 @@ import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
 import java.text.Normalizer
+import java.util.Locale
 
 private val WS = Regex("\\s+")
 private val INT = Regex("""\d[\d,]*""")
@@ -280,5 +281,86 @@ object CsvParser {
                 clear = ClearMark.parse(at(iClear).nfkc()),
             )
         }
+    }
+}
+
+
+private val RK_INT = Regex("""\d[\d,]*""")
+private fun rkText(s: String?): String = s?.replace(WS, " ")?.trim().orEmpty()
+private fun rkInt(s: String?): Int? = s?.let { RK_INT.find(it)?.value?.replace(",", "")?.toIntOrNull() }
+
+/** `#rank_tbl > li` 구조의 순위표 (배틀 랭킹 실제 HTML 기준) */
+object RankListParser {
+    private val PID = Regex("""SV-\d{4}-\d{4}""")
+    private val MEDAL = mapOf("rank_1st" to 1, "rank_2nd" to 2, "rank_3rd" to 3)
+
+    fun entries(doc: Document, myId: String?, startRank: Int = 1): List<BoardEntry> =
+        doc.select("#rank_tbl > li").mapIndexedNotNull { i, li ->
+            val nameEl = li.selectFirst(".playername") ?: return@mapIndexedNotNull null
+            val a = nameEl.selectFirst("a")
+            val name = rkText(a?.text() ?: nameEl.text())
+            if (name.isEmpty()) return@mapIndexedNotNull null
+            val rankEl = li.selectFirst(".rank")
+            val cls = (rankEl?.classNames() ?: emptySet()) + li.classNames()
+            val rank = cls.firstNotNullOfOrNull { MEDAL[it] }
+                ?: li.select("[class*=rank_]").flatMap { it.classNames() }.firstNotNullOfOrNull { MEDAL[it] }
+                ?: rkInt(rankEl?.text())
+                ?: (startRank + i)
+            val pid = PID.find(a?.attr("href").orEmpty())?.value ?: PID.find(li.text())?.value
+            val scoreEl = li.selectFirst(".score")
+            val raw = rkText(scoreEl?.ownText()).ifEmpty { rkText(scoreEl?.text()) }
+            val value = rkInt(raw)?.let { String.format(Locale.US, "%,d", it) } ?: raw.ifEmpty { "-" }
+            val dateEl = li.selectFirst(".date")
+            val date = rkText(dateEl?.ownText()).ifEmpty { rkText(dateEl?.text()) }.ifEmpty { null }
+            BoardEntry(rank, name, pid, value, date, pid != null && pid == myId)
+        }
+
+    /** (value, 표시 이름) */
+    fun seasons(doc: Document): List<Pair<String, String>> =
+        doc.select("select[name=season] option").mapNotNull { o ->
+            val v = o.attr("value").trim()
+            val l = rkText(o.text())
+            if (v.isEmpty() || l.isEmpty()) null else v to l
+        }
+
+    fun selectedSeason(doc: Document): String? =
+        doc.selectFirst("select[name=season] option[selected]")?.attr("value")?.trim()?.ifEmpty { null }
+
+    fun pageCount(doc: Document): Int = doc.select("#search_page option").size.coerceAtLeast(1)
+
+    fun updated(doc: Document): String? = rkText(doc.selectFirst("#update")?.text()).ifEmpty { null }
+}
+
+/** 위클리 스코어 어택 과제곡 목록 (`#music_box .cat`) */
+object WeeklyParser {
+    private val WEEK = Regex("""week=(\d+)""")
+
+    fun parse(doc: Document): List<RankingBoard> =
+        doc.select("#music_box .cat").mapNotNull { cat ->
+            val info = cat.selectFirst("[id=info]") ?: return@mapNotNull null
+            val spans = info.select("span")
+            val title = rkText(info.ownText())
+            if (title.isEmpty()) return@mapNotNull null
+            val period = rkText(spans.getOrNull(0)?.text())
+            val artist = rkText(spans.getOrNull(1)?.text())
+            val charts = cat.select("a[href*=ranking.html]").map { a ->
+                val src = a.selectFirst("img")?.attr("src").orEmpty()
+                val label = src.substringAfterLast('/').substringBefore('.').uppercase(Locale.ROOT).ifEmpty { "?" }
+                ChartLink(label, absolute(a.attr("href")))
+            }
+            val week = charts.firstNotNullOfOrNull { WEEK.find(it.url)?.groupValues?.get(1) }
+            val note = listOfNotNull(week?.let { "제${it}주" }, period.ifEmpty { null }, artist.ifEmpty { null })
+                .joinToString(" · ").ifEmpty { null }
+            RankingBoard(title, emptyList(), note, charts)
+        }
+
+    fun pageCount(doc: Document): Int =
+        doc.select("select option").count { o -> val t = rkText(o.text()); t.isNotEmpty() && t.all { it.isDigit() } }
+            .coerceAtLeast(1)
+
+    private fun absolute(href: String): String = when {
+        href.startsWith("http") -> href
+        href.startsWith("/") -> Urls.HOST + href
+        else -> Urls.BASE + "ranking/weekly/" + href
     }
 }

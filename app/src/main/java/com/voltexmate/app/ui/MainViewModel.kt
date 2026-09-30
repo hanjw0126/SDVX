@@ -19,6 +19,9 @@ import com.voltexmate.app.data.Prefs
 import com.voltexmate.app.data.ProfileDetail
 import com.voltexmate.app.data.ProfileParser
 import com.voltexmate.app.data.BoardParser
+import com.voltexmate.app.data.RankDetail
+import com.voltexmate.app.data.RankListParser
+import com.voltexmate.app.data.WeeklyParser
 import com.voltexmate.app.data.RankingBoard
 import com.voltexmate.app.data.RankingKind
 import com.voltexmate.app.data.ScoreStore
@@ -45,6 +48,10 @@ import java.io.File
 import java.io.IOException
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
+    private companion object {
+        const val DETAIL_KEY = "WEEKLY_DETAIL"
+    }
+
     private val prefs = Prefs(app)
     private val scoreStore = ScoreStore(app)
     private val matchStore = MatchLogStore(app)
@@ -72,6 +79,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _boards = MutableStateFlow<Map<RankingKind, UiLoad<List<RankingBoard>>>>(emptyMap())
     val boards: StateFlow<Map<RankingKind, UiLoad<List<RankingBoard>>>> = _boards.asStateFlow()
+
+    /** 배틀 랭킹 시즌 (value, 표시 이름) */
+    private val _seasons = MutableStateFlow<List<Pair<String, String>>>(emptyList())
+    val seasons: StateFlow<List<Pair<String, String>>> = _seasons.asStateFlow()
+    private val _season = MutableStateFlow<String?>(null)
+    val season: StateFlow<String?> = _season.asStateFlow()
+
+    private val _detail = MutableStateFlow<RankDetail?>(null)
+    val detail: StateFlow<RankDetail?> = _detail.asStateFlow()
 
     private val _avatar = MutableStateFlow<File?>(null)
     val avatar: StateFlow<File?> = _avatar.asStateFlow()
@@ -126,6 +142,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun resetRemote() {
         html.clear()
         _boards.value = emptyMap()
+        _seasons.value = emptyList()
+        _season.value = null
+        _detail.value = null
         _profile.value = UiLoad.Loading
     }
 
@@ -207,15 +226,115 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (demo) {
                     delay(400)
                     Demo.boards(kind)
-                } else {
-                    val page = source.fetch(kind.url, strict = false)
-                    html[kind.name] = page.html
-                    val myId = currentProfile()?.playerId
-                    withContext(Dispatchers.Default) { BoardParser.parse(page.doc, myId) }
+                } else when (kind) {
+                    RankingKind.BATTLE -> loadBattle()
+                    RankingKind.WEEKLY -> loadWeekly()
+                    RankingKind.SCORE -> {
+                        val page = source.fetch(kind.url, strict = false)
+                        html[kind.name] = page.html
+                        parseBoards(page, kind.label)
+                    }
                 }
             }
             _boards.update { it + (kind to r) }
         }
+    }
+
+    fun selectSeason(value: String) {
+        if (value == _season.value) return
+        _season.value = value
+        loadRanking(RankingKind.BATTLE, force = true)
+    }
+
+    fun openWeeklyChart(title: String, url: String) {
+        val demo = isDemo
+        viewModelScope.launch {
+            _detail.value = RankDetail(title, url, UiLoad.Loading)
+            val r: UiLoad<List<RankingBoard>> = load {
+                if (demo) {
+                    delay(300)
+                    Demo.boards(RankingKind.WEEKLY)
+                } else {
+                    val page = source.fetch(url, strict = false)
+                    html[DETAIL_KEY] = page.html
+                    parseBoards(page, title)
+                }
+            }
+            if (_detail.value?.url == url) _detail.value = RankDetail(title, url, r)
+        }
+    }
+
+    fun closeDetail() {
+        _detail.value = null
+    }
+
+    private suspend fun parseBoards(page: OfficialSource.Page, title: String): List<RankingBoard> {
+        val myId = currentProfile()?.playerId
+        return withContext(Dispatchers.Default) {
+            val list = RankListParser.entries(page.doc, myId)
+            if (list.isNotEmpty()) {
+                listOf(RankingBoard(title, list, noteFor(RankListParser.updated(page.doc), list)))
+            } else BoardParser.parse(page.doc, myId)
+        }
+    }
+
+    private fun noteFor(updated: String?, list: List<com.voltexmate.app.data.BoardEntry>): String =
+        listOfNotNull(
+            updated?.let { "갱신 $it" },
+            list.firstOrNull { it.isMe }?.let { "내 순위 ${it.rank}위" },
+            "${list.size}명",
+        ).joinToString(" · ")
+
+    /** 배틀 랭킹: 1페이지 100명, 최대 5페이지까지 이어 붙임 */
+    private suspend fun loadBattle(): List<RankingBoard> {
+        val s = _season.value
+        fun url(p: Int) = Urls.BATTLE + "?" + listOfNotNull(s?.let { "season=$it" }, "page=$p").joinToString("&")
+        val first = source.fetch(url(1), strict = false)
+        html[RankingKind.BATTLE.name] = first.html
+        val doc = first.doc
+        val seasons = RankListParser.seasons(doc)
+        if (seasons.isNotEmpty()) _seasons.value = seasons
+        if (s == null) _season.value = RankListParser.selectedSeason(doc) ?: seasons.firstOrNull()?.first
+        val myId = currentProfile()?.playerId
+        val entries = withContext(Dispatchers.Default) { RankListParser.entries(doc, myId) }.toMutableList()
+        if (entries.isEmpty()) return withContext(Dispatchers.Default) { BoardParser.parse(doc, myId) }
+        val pages = RankListParser.pageCount(doc).coerceAtMost(5)
+        for (p in 2..pages) {
+            val more = try {
+                source.fetch(url(p), strict = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            } ?: break
+            val add = withContext(Dispatchers.Default) { RankListParser.entries(more.doc, myId, startRank = entries.size + 1) }
+            if (add.isEmpty()) break
+            entries += add
+        }
+        val label = seasons.firstOrNull { it.first == _season.value }?.second ?: RankingKind.BATTLE.label
+        return listOf(RankingBoard(label, entries, noteFor(RankListParser.updated(doc), entries)))
+    }
+
+    /** 위클리: 과제곡 목록 (순위는 곡·난이도별 상세 페이지) */
+    private suspend fun loadWeekly(): List<RankingBoard> {
+        val first = source.fetch(Urls.WEEKLY, strict = false)
+        html[RankingKind.WEEKLY.name] = first.html
+        val out = withContext(Dispatchers.Default) { WeeklyParser.parse(first.doc) }.toMutableList()
+        if (out.isEmpty()) return parseBoards(first, RankingKind.WEEKLY.label)
+        val pages = WeeklyParser.pageCount(first.doc).coerceAtMost(4)
+        for (p in 2..pages) {
+            val more = try {
+                source.fetch(Urls.WEEKLY + "?page=$p", strict = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            } ?: break
+            val add = withContext(Dispatchers.Default) { WeeklyParser.parse(more.doc) }
+            if (add.isEmpty()) break
+            out += add
+        }
+        return out.distinctBy { it.title to it.note }
     }
 
     fun setAvatar(uri: Uri) {

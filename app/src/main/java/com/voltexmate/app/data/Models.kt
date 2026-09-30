@@ -199,7 +199,17 @@ enum class RankingKind(val label: String, val short: String, val url: String) {
     BATTLE("배틀 랭킹", "배틀", Urls.BATTLE),
 }
 
-data class RankingBoard(val title: String, val entries: List<BoardEntry>)
+data class ChartLink(val label: String, val url: String)
+
+data class RankingBoard(
+    val title: String,
+    val entries: List<BoardEntry>,
+    val note: String? = null,
+    val charts: List<ChartLink> = emptyList(),
+)
+
+/** 위클리 과제곡의 난이도별 순위 (상세 화면) */
+data class RankDetail(val title: String, val url: String, val state: UiLoad<List<RankingBoard>>)
 
 data class BoardEntry(
     val rank: Int,
