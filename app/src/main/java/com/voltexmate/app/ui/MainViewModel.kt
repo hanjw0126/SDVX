@@ -27,6 +27,10 @@ import com.voltexmate.app.data.RankingKind
 import com.voltexmate.app.data.ScoreStore
 import com.voltexmate.app.data.ScoreUpdate
 import com.voltexmate.app.data.Session
+import com.voltexmate.app.data.SongPage
+import com.voltexmate.app.data.SongQuery
+import com.voltexmate.app.data.SongSearchParser
+import com.voltexmate.app.data.UserStatusParser
 import com.voltexmate.app.data.SessionExpiredError
 import com.voltexmate.app.data.UiLoad
 import com.voltexmate.app.data.Urls
@@ -89,6 +93,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _detail = MutableStateFlow<RankDetail?>(null)
     val detail: StateFlow<RankDetail?> = _detail.asStateFlow()
 
+    /** 스코어 랭킹 곡 검색 */
+    private val _songQuery = MutableStateFlow(SongQuery())
+    val songQuery: StateFlow<SongQuery> = _songQuery.asStateFlow()
+    private val _songs = MutableStateFlow<UiLoad<SongPage>?>(null)
+    val songs: StateFlow<UiLoad<SongPage>?> = _songs.asStateFlow()
+
     private val _avatar = MutableStateFlow<File?>(null)
     val avatar: StateFlow<File?> = _avatar.asStateFlow()
 
@@ -145,6 +155,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _seasons.value = emptyList()
         _season.value = null
         _detail.value = null
+        _songs.value = null
         _profile.value = UiLoad.Loading
     }
 
@@ -246,14 +257,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         loadRanking(RankingKind.BATTLE, force = true)
     }
 
-    fun openWeeklyChart(title: String, url: String) {
+    fun openWeeklyChart(title: String, url: String, demoKind: RankingKind = RankingKind.WEEKLY) {
         val demo = isDemo
         viewModelScope.launch {
             _detail.value = RankDetail(title, url, UiLoad.Loading)
             val r: UiLoad<List<RankingBoard>> = load {
                 if (demo) {
                     delay(300)
-                    Demo.boards(RankingKind.WEEKLY)
+                    Demo.boards(demoKind)
                 } else {
                     val page = source.fetch(url, strict = false)
                     html[DETAIL_KEY] = page.html
@@ -262,6 +273,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (_detail.value?.url == url) _detail.value = RankDetail(title, url, r)
         }
+    }
+
+    /** 스코어 랭킹: 공식 곡 검색 (키워드·카테고리·레벨·최근 플레이순, 10곡/페이지) */
+    fun searchSongs(q: SongQuery) {
+        _songQuery.value = q
+        val demo = isDemo
+        viewModelScope.launch {
+            _songs.value = UiLoad.Loading
+            var needLogin = false
+            val r: UiLoad<SongPage> = load {
+                if (demo) {
+                    delay(300)
+                    Demo.songPage(q)
+                } else {
+                    val page = source.fetch(SongSearchParser.url(q), strict = false)
+                    html[RankingKind.SCORE.name] = page.html
+                    val st = UserStatusParser.parse(page.html)
+                    if (st != null && !st.login) needLogin = true
+                    val found = needLogin || SongSearchParser.hasList(page.doc)
+                    if (!found) throw ParseError("곡 목록을 찾지 못했어요")
+                    withContext(Dispatchers.Default) { SongSearchParser.page(page.doc, q.page) }
+                }
+            }
+            if (_songQuery.value != q) return@launch
+            _songs.value = if (needLogin) UiLoad.Fail("로그인이 풀렸어요. 다시 로그인해 주세요.", sessionExpired = true) else r
+        }
+    }
+
+    fun loadSongsIfNeeded() {
+        if (_songs.value == null) searchSongs(_songQuery.value)
     }
 
     fun closeDetail() {

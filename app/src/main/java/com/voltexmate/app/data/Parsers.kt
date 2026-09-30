@@ -364,3 +364,65 @@ object WeeklyParser {
         else -> Urls.BASE + "ranking/weekly/" + href
     }
 }
+
+/** 스코어 랭킹 악곡 검색 (`ranking/index.html` 의 `#music_box .cat`, 10곡/페이지) */
+object SongSearchParser {
+    private val TYPE = Regex("""type=(\d+)""")
+
+    fun url(q: SongQuery): String {
+        val parts = mutableListOf(
+            "search_category=" + (if (q.category > 0) q.category else -1),
+            "search_name=" + java.net.URLEncoder.encode(q.keyword.trim(), "UTF-8"),
+            "search_level=" + (if (q.level > 0) q.level else -1),
+        )
+        if (q.recent) parts += "recent=on"
+        parts += "page=" + q.page.coerceAtLeast(1)
+        return Urls.RANKING + "?" + parts.joinToString("&")
+    }
+
+    fun hasList(doc: Document): Boolean = doc.selectFirst("#music_box") != null
+
+    fun songs(doc: Document): List<SongItem> =
+        doc.select("#music_box .cat").mapNotNull { cat ->
+            val info = cat.selectFirst("[id=info]") ?: return@mapNotNull null
+            val artist = rkText(info.selectFirst("span")?.text())
+            val title = rkText(info.ownText()).ifEmpty { rkText(info.text()).removeSuffix(artist).trim() }
+            if (title.isEmpty()) return@mapNotNull null
+            val img = cat.selectFirst("img[src*=jacket]") ?: cat.select("img").firstOrNull { el ->
+                !el.attr("src").contains("/diff/") &&
+                    el.parents().none { it.tagName() == "a" && it.attr("href").contains("ranking.html") }
+            }
+            val jacket = img?.attr("src")?.trim()?.takeIf { it.isNotEmpty() }?.let { absolute(it) }
+            val charts = cat.select("a[href*=ranking.html]").map { a ->
+                val file = a.selectFirst("img")?.attr("src").orEmpty().substringAfterLast('/').substringBefore('.')
+                val label = Difficulty.parse(file)?.short
+                    ?: file.uppercase(Locale.ROOT).ifEmpty { typeLabel(a.attr("href")) }
+                ChartLink(label, absolute(a.attr("href")))
+            }.distinctBy { it.url }
+            SongItem(title, artist, jacket, charts)
+        }
+
+    fun page(doc: Document, requested: Int): SongPage {
+        val opts = doc.select("#search_page option")
+        val cur = opts.firstOrNull { it.hasAttr("selected") }?.attr("value")?.trim()?.toIntOrNull()
+            ?: rkInt(doc.selectFirst("#pager li.active")?.text())
+            ?: requested
+        val pages = maxOf(opts.size, cur, 1)
+        return SongPage(songs(doc), cur, pages)
+    }
+
+    private fun typeLabel(href: String): String = when (TYPE.find(href)?.groupValues?.get(1)) {
+        "0" -> "NOV"
+        "1" -> "ADV"
+        "2" -> "EXH"
+        "4" -> "MXM"
+        else -> "?"
+    }
+
+    private fun absolute(href: String): String = when {
+        href.startsWith("http") -> href
+        href.startsWith("//") -> "https:$href"
+        href.startsWith("/") -> Urls.HOST + href
+        else -> Urls.BASE + "ranking/" + href
+    }
+}

@@ -14,8 +14,8 @@ android {
         applicationId = "com.voltexmate.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
-        versionName = (project.findProperty("versionName") as String?) ?: "1.0.0"
+        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 2
+        versionName = (project.findProperty("versionName") as String?) ?: "1.0.1"
     }
 
     signingConfigs {

@@ -233,3 +233,36 @@ sealed interface UiLoad<out T> {
 }
 
 enum class Session { UNKNOWN, LOGGED_OUT, LOGGED_IN, DEMO }
+
+/** 스코어 랭킹 곡 검색 조건 (공식 form_search 와 같은 값). category/level 은 -1 = 전체 */
+data class SongQuery(
+    val keyword: String = "",
+    val category: Int = -1,
+    val level: Int = -1,
+    val recent: Boolean = false,
+    val page: Int = 1,
+)
+
+data class SongItem(val title: String, val artist: String, val jacket: String?, val charts: List<ChartLink>)
+
+data class SongPage(val songs: List<SongItem>, val page: Int, val pages: Int)
+
+object SongSearch {
+    /** search_category 값 → 표시 이름 */
+    val CATEGORIES: List<Pair<Int, String>> = listOf(
+        1 to "POPS&애니",
+        2 to "東方",
+        3 to "보카로",
+        4 to "BEMANI",
+        5 to "히나비타/반메시",
+        6 to "FLOOR",
+        7 to "SDVX 오리지널",
+        8 to "기타",
+    )
+
+    /** search_level 값 = 레벨 × 10 (공식 선택지 기준) */
+    val LEVELS: List<Int> = (1..17).map { it * 10 } + 175 + (180..209).toList()
+
+    fun levelLabel(v: Int): String =
+        if (v % 10 == 0) (v / 10).toString() else String.format(Locale.US, "%.1f", v / 10.0)
+}

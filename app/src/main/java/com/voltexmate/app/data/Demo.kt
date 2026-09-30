@@ -94,4 +94,16 @@ object Demo {
             },
         ),
     )
+
+    fun songPage(q: SongQuery): SongPage {
+        val key = q.keyword.trim()
+        val all = scores.map { it.title.substringBefore(" (") }.distinct()
+            .filter { key.isEmpty() || it.contains(key, ignoreCase = true) }
+        val pages = ((all.size + 9) / 10).coerceAtLeast(1)
+        val p = q.page.coerceIn(1, pages)
+        val songs = all.drop((p - 1) * 10).take(10).map { t ->
+            SongItem(t, "DEMO ARTIST", null, listOf("NOV", "ADV", "EXH", "MXM").map { ChartLink(it, Urls.RANKING + "#demo-$it") })
+        }
+        return SongPage(songs, p, pages)
+    }
 }
